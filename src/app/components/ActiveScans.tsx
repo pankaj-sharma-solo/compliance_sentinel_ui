@@ -8,67 +8,67 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type ThreadStatus = 'RUNNING' | 'INTERRUPTED' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+type ThreadStatus  = 'RUNNING' | 'INTERRUPTED' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 type SeverityLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 
 interface DbConnection {
-    id: number;
-    name: string;
-    db_type: string;
-    server_region: string | null;
-    scan_mode: 'CDC' | 'SCHEDULED' | 'MANUAL';
+    id             : number;
+    name           : string;
+    db_type        : string;
+    server_region  : string | null;
+    scan_mode      : 'CDC' | 'SCHEDULED' | 'MANUAL';
     last_scanned_at: string | null;
-    schema_mapped: boolean;
+    schema_mapped  : boolean;
 }
 
 interface ScanThread {
-    thread_id: string;
-    db_connection_id: number;
+    thread_id         : string;
+    db_connection_id  : number;
     db_connection_name: string;
-    workflow_type: string;
-    status: ThreadStatus;
-    started_at: string;
-    completed_at: string | null;
-    interrupted_at: string | null;
-    error_detail: string | null;
-    violation_count: number;
-    critical_count: number;
-    high_count: number;
+    workflow_type     : string;
+    status            : ThreadStatus;
+    started_at        : string;
+    completed_at      : string | null;
+    interrupted_at    : string | null;
+    error_detail      : string | null;
+    violation_count   : number;
+    critical_count    : number;
+    high_count        : number;
 }
 
 interface ViolationSummary {
-    id: number;
-    rule_id: string;
-    table_name: string;
-    column_name: string | null;
-    severity: SeverityLevel;
+    id               : number;
+    rule_id          : string;
+    table_name       : string;
+    column_name      : string | null;
+    severity         : SeverityLevel;
     condition_matched: string;
-    detected_at: string;
+    detected_at      : string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const SEVERITY_STYLES: Record<SeverityLevel, string> = {
-    CRITICAL : 'bg-red-500/20 text-red-400 border border-red-500/30',
-    HIGH     : 'bg-orange-500/20 text-orange-400 border border-orange-500/30',
-    MEDIUM   : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
-    LOW      : 'bg-blue-500/20 text-blue-400 border border-blue-500/30',
+    CRITICAL: 'bg-red-500/20 text-red-400 border border-red-500/30',
+    HIGH    : 'bg-orange-500/20 text-orange-400 border border-orange-500/30',
+    MEDIUM  : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
+    LOW     : 'bg-blue-500/20 text-blue-400 border border-blue-500/30',
 };
 
 const STATUS_STYLES: Record<ThreadStatus, string> = {
-    RUNNING     : 'text-cyan-400',
-    INTERRUPTED : 'text-yellow-400',
-    COMPLETED   : 'text-green-400',
-    FAILED      : 'text-red-400',
-    CANCELLED   : 'text-gray-400',
+    RUNNING    : 'text-cyan-400',
+    INTERRUPTED: 'text-yellow-400',
+    COMPLETED  : 'text-green-400',
+    FAILED     : 'text-red-400',
+    CANCELLED  : 'text-gray-400',
 };
 
-const STATUS_ICONS: Record<ThreadStatus, React.ReactElement> = {
-    RUNNING     : <RefreshCw className="w-4 h-4 animate-spin" />,
-    INTERRUPTED : <Clock className="w-4 h-4" />,
-    COMPLETED   : <CheckCircle className="w-4 h-4" />,
-    FAILED      : <XCircle className="w-4 h-4" />,
-    CANCELLED   : <StopCircle className="w-4 h-4" />,
+const STATUS_ICONS: Record<ThreadStatus, React.ReactNode> = {
+    RUNNING    : <RefreshCw className="w-3.5 h-3.5 animate-spin" />,
+    INTERRUPTED: <AlertTriangle className="w-3.5 h-3.5" />,
+    COMPLETED  : <CheckCircle className="w-3.5 h-3.5" />,
+    FAILED     : <XCircle className="w-3.5 h-3.5" />,
+    CANCELLED  : <XCircle className="w-3.5 h-3.5" />,
 };
 
 function elapsed(startedAt: string): string {
@@ -81,29 +81,27 @@ function elapsed(startedAt: string): string {
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export default function ActiveScans() {
-    const [connections, setConnections]     = useState<DbConnection[]>([]);
-    const [threads, setThreads]             = useState<ScanThread[]>([]);
-    const [launching, setLaunching]         = useState<number | null>(null);
-    const [expandedThread, setExpandedThread] = useState<string | null>(null);
-    const [violations, setViolations]       = useState<Record<string, ViolationSummary[]>>({});
+    const [connections, setConnections]             = useState<DbConnection[]>([]);
+    const [threads, setThreads]                     = useState<ScanThread[]>([]);
+    const [launching, setLaunching]                 = useState<number | null>(null);
+    const [expandedThread, setExpandedThread]       = useState<string | null>(null);
+    const [violations, setViolations]               = useState<Record<string, ViolationSummary[]>>({});
     const [loadingViolations, setLoadingViolations] = useState<string | null>(null);
-    const [elapsedTick, setElapsedTick]     = useState(0);
-    const pollRef                           = useRef<ReturnType<typeof setInterval> | null>(null);
+    const [cancelling, setCancelling]               = useState<string | null>(null);
+    const [launchError, setLaunchError]             = useState<string | null>(null);
+    const [elapsedTick, setElapsedTick]             = useState(0);
+    const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     useEffect(() => {
         fetchConnections();
         fetchThreads();
         startPolling();
-
-        // Tick every second to update elapsed timers for RUNNING threads
         const ticker = setInterval(() => setElapsedTick(t => t + 1), 1000);
-        return () => {
-            stopPolling();
-            clearInterval(ticker);
-        };
+        return () => { stopPolling(); clearInterval(ticker); };
     }, []);
 
-    // ── Data fetchers ─────────────────────────────────────────────────────
+    // ── Fetchers ──────────────────────────────────────────────────────────────
+
     const fetchConnections = async () => {
         try {
             const res = await fetch(`${API_BASE}/connections`);
@@ -113,7 +111,7 @@ export default function ActiveScans() {
 
     const fetchThreads = async () => {
         try {
-            const res = await fetch(`${API_BASE}/scans/threads`);
+            const res = await fetch(`${API_BASE}/scans/threads?limit=50`);
             if (res.ok) setThreads(await res.json());
         } catch { /* silent */ }
     };
@@ -132,40 +130,47 @@ export default function ActiveScans() {
         }
     };
 
+    // ── Polling ───────────────────────────────────────────────────────────────
 
-    // ── Polling: refresh threads every 3s while any are RUNNING ──────────
     const startPolling = () => {
-        pollRef.current = setInterval(() => {
-            fetchThreads();
-        }, 3000);
+        pollRef.current = setInterval(fetchThreads, 3000);
     };
-
     const stopPolling = () => {
         if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     };
 
-    // ── Launch manual scan ────────────────────────────────────────────────
+    // ── Actions ───────────────────────────────────────────────────────────────
+
     const launchScan = async (connectionId: number) => {
         setLaunching(connectionId);
+        setLaunchError(null);
         try {
             const res = await fetch(`${API_BASE}/scans/trigger`, {
                 method : 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body   : JSON.stringify({ db_connection_id: connectionId, workflow_type: 'policy_review' }),
             });
-            if (res.ok) await fetchThreads();
+            if (!res.ok) {
+                const err = await res.json();
+                setLaunchError(err.detail ?? 'Failed to launch scan');
+            } else {
+                await fetchThreads();
+            }
         } finally {
             setLaunching(null);
         }
     };
 
-    // ── Cancel a running scan ─────────────────────────────────────────────
     const cancelScan = async (threadId: string) => {
-        await fetch(`${API_BASE}/scans/threads/${threadId}/cancel`, { method: 'PATCH' });
-        await fetchThreads();
+        setCancelling(threadId);
+        try {
+            await fetch(`${API_BASE}/scans/threads/${threadId}/cancel`, { method: 'PATCH' });
+            await fetchThreads();
+        } finally {
+            setCancelling(null);
+        }
     };
 
-    // ── Expand/collapse thread row ────────────────────────────────────────
     const toggleExpand = (threadId: string) => {
         if (expandedThread === threadId) {
             setExpandedThread(null);
@@ -178,49 +183,51 @@ export default function ActiveScans() {
     const runningCount = threads.filter(t => t.status === 'RUNNING').length;
 
     return (
-        <div className="p-8">
+        <div className="p-8 space-y-6">
 
-            {/* ── Header ── */}
-            <div className="flex items-center justify-between mb-6">
+            {/* Header */}
+            <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                     <Activity className="w-6 h-6 text-cyan-400" />
                     <h2 className="text-2xl font-bold text-white">Active Scans</h2>
                     {runningCount > 0 && (
-                        <span className="px-2 py-0.5 bg-cyan-400/20 border border-cyan-400/30 text-cyan-400 text-xs font-mono rounded-full animate-pulse">
-              {runningCount} running
-            </span>
+                        <span className="flex items-center gap-1.5 text-xs text-cyan-400 font-mono bg-cyan-400/10 px-2 py-0.5 rounded-full border border-cyan-400/20">
+                            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse inline-block" />
+                            {runningCount} running
+                        </span>
                     )}
                 </div>
-                <button
-                    onClick={fetchThreads}
-                    className="flex items-center gap-2 px-3 py-2 bg-white/5 border border-white/10 text-gray-400 text-xs rounded-lg hover:border-cyan-400/40 hover:text-cyan-400 transition-all"
-                >
-                    <RefreshCw className="w-3.5 h-3.5" /> Refresh
+                <button onClick={fetchThreads}
+                        className="p-2 text-gray-400 hover:text-cyan-400 transition-colors" title="Refresh">
+                    <RefreshCw className="w-4 h-4" />
                 </button>
             </div>
 
-            {/* ── Database Connections — trigger panel ── */}
-            <div className="mb-6 bg-[#0a0a0a]/40 backdrop-blur-xl border border-white/10 rounded-xl p-5">
-                <h3 className="text-xs uppercase tracking-wider text-gray-400 mb-4">
+            {/* Launch error */}
+            {launchError && (
+                <div className="flex items-center gap-2 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">
+                    <XCircle className="w-4 h-4 flex-shrink-0" /> {launchError}
+                </div>
+            )}
+
+            {/* Registered Databases — trigger panel */}
+            <div className="bg-[#0a0a0a]/40 backdrop-blur-xl border border-white/10 rounded-xl p-5">
+                <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
                     Registered Databases — Trigger Manual Scan
                 </h3>
                 {connections.length === 0 ? (
-                    <p className="text-sm text-gray-500 text-center py-4">
-                        No database connections registered yet.
-                    </p>
+                    <p className="text-gray-500 text-sm">No database connections registered yet.</p>
                 ) : (
-                    <div className="grid grid-cols-1 gap-3">
+                    <div className="space-y-2">
                         {connections.map(conn => (
-                            <div
-                                key={conn.id}
-                                className="flex items-center justify-between p-4 bg-black/40 rounded-lg border border-white/5 hover:border-cyan-400/20 transition-all"
-                            >
+                            <div key={conn.id}
+                                 className="flex items-center justify-between p-3 bg-black/30 rounded-lg border border-white/5">
                                 <div className="flex items-center gap-3">
-                                    <Database className="w-5 h-5 text-cyan-400/70" />
+                                    <Database className="w-4 h-4 text-cyan-400/60" />
                                     <div>
-                                        <div className="text-sm font-medium text-white">{conn.name}</div>
-                                        <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-2">
-                                            <span className="uppercase">{conn.db_type}</span>
+                                        <span className="text-sm font-medium text-white">{conn.name}</span>
+                                        <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-500">
+                                            <span className="font-mono uppercase">{conn.db_type}</span>
                                             {conn.server_region && <span>· {conn.server_region}</span>}
                                             <span>· {conn.scan_mode}</span>
                                             {conn.last_scanned_at && (
@@ -228,102 +235,114 @@ export default function ActiveScans() {
                                             )}
                                         </div>
                                     </div>
-                                </div>
-
-                                <div className="flex items-center gap-2">
                                     {!conn.schema_mapped && (
-                                        <span className="text-xs text-yellow-400 font-mono bg-yellow-400/10 px-2 py-1 rounded border border-yellow-400/20">
-                      Schema unmapped
-                    </span>
+                                        <span className="text-xs px-1.5 py-0.5 bg-yellow-500/15 text-yellow-400 border border-yellow-500/25 rounded font-mono flex items-center gap-1">
+                                            <AlertTriangle className="w-3 h-3" /> Schema unmapped
+                                        </span>
                                     )}
-                                    <button
-                                        onClick={() => launchScan(conn.id)}
-                                        disabled={launching === conn.id || !conn.schema_mapped}
-                                        className="flex items-center gap-1.5 px-4 py-2 bg-cyan-500/20 border border-cyan-400/40 text-cyan-400 text-xs font-medium rounded-lg hover:bg-cyan-500/30 hover:border-cyan-400 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                                    >
-                                        {launching === conn.id
-                                            ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Launching...</>
-                                            : <><Play className="w-3.5 h-3.5" /> Run Scan</>
-                                        }
-                                    </button>
                                 </div>
+                                <button
+                                    onClick={() => launchScan(conn.id)}
+                                    disabled={launching === conn.id || !conn.schema_mapped}
+                                    className="flex items-center gap-1.5 px-4 py-2 bg-cyan-500/20 border border-cyan-400/40 text-cyan-400 text-xs font-medium rounded-lg hover:bg-cyan-500/30 hover:border-cyan-400 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                    {launching === conn.id
+                                        ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Launching...</>
+                                        : <><Play className="w-3.5 h-3.5" /> Run Scan</>
+                                    }
+                                </button>
                             </div>
                         ))}
                     </div>
                 )}
             </div>
 
-            {/* ── Scan Threads ── */}
+            {/* Scan Threads */}
             <div className="bg-[#0a0a0a]/40 backdrop-blur-xl border border-white/10 rounded-xl p-5">
-                <h3 className="text-xs uppercase tracking-wider text-gray-400 mb-4">Scan History</h3>
-
+                <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
+                    Scan History
+                </h3>
                 {threads.length === 0 ? (
-                    <div className="text-center py-12 text-gray-500">
-                        <Activity className="w-10 h-10 mx-auto mb-3 opacity-20" />
-                        <p className="text-sm">No scans triggered yet. Select a database above to start.</p>
-                    </div>
+                    <p className="text-gray-500 text-sm">No scans triggered yet. Select a database above to start.</p>
                 ) : (
                     <div className="space-y-2">
                         {threads.map(thread => (
                             <div key={thread.thread_id} className="border border-white/5 rounded-lg overflow-hidden">
 
-                                {/* ── Thread row ── */}
+                                {/* Thread row */}
                                 <div
-                                    className="flex items-center justify-between p-4 bg-black/30 cursor-pointer hover:bg-black/50 transition-all"
+                                    className="flex items-center justify-between px-4 py-3 bg-black/30 hover:bg-black/50 transition-all cursor-pointer"
                                     onClick={() => toggleExpand(thread.thread_id)}
                                 >
                                     <div className="flex items-center gap-3">
-                    <span className={STATUS_STYLES[thread.status]}>
-                      {STATUS_ICONS[thread.status]}
-                    </span>
+                                        <span className={STATUS_STYLES[thread.status]}>
+                                            {STATUS_ICONS[thread.status]}
+                                        </span>
                                         <div>
-                                            <div className="text-sm font-medium text-white">{thread.db_connection_name}</div>
-                                            <div className="text-xs text-gray-500 font-mono mt-0.5">
-                                                {thread.thread_id.slice(0, 8)}... · {thread.workflow_type}
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-sm font-medium text-white">
+                                                    {thread.db_connection_name}
+                                                </span>
+                                                <span className="text-xs text-gray-600 font-mono">
+                                                    {thread.thread_id.slice(0, 8)}...
+                                                </span>
+                                                <span className="text-xs text-gray-500">
+                                                    {thread.workflow_type}
+                                                </span>
+                                            </div>
+                                            {/* Violation count badges */}
+                                            <div className="flex items-center gap-1.5 mt-1">
+                                                {thread.critical_count > 0 && (
+                                                    <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${SEVERITY_STYLES.CRITICAL}`}>
+                                                        {thread.critical_count} CRITICAL
+                                                    </span>
+                                                )}
+                                                {thread.high_count > 0 && (
+                                                    <span className={`text-xs px-1.5 py-0.5 rounded font-mono ${SEVERITY_STYLES.HIGH}`}>
+                                                        {thread.high_count} HIGH
+                                                    </span>
+                                                )}
+                                                {thread.violation_count > 0 && (
+                                                    <span className="text-xs text-gray-500 font-mono">
+                                                        {thread.violation_count} total violations
+                                                    </span>
+                                                )}
+                                                {thread.violation_count === 0 && thread.status === 'COMPLETED' && (
+                                                    <span className="text-xs text-green-500 font-mono">✓ Clean</span>
+                                                )}
                                             </div>
                                         </div>
                                     </div>
 
-                                    <div className="flex items-center gap-4">
-                                        {/* Violation counts */}
-                                        {(thread.critical_count > 0 || thread.high_count > 0) && (
-                                            <div className="flex items-center gap-2">
-                                                {thread.critical_count > 0 && (
-                                                    <span className="flex items-center gap-1 text-xs px-2 py-0.5 bg-red-500/20 text-red-400 border border-red-500/30 rounded font-mono">
-                            <AlertTriangle className="w-3 h-3" /> {thread.critical_count} CRITICAL
-                          </span>
-                                                )}
-                                                {thread.high_count > 0 && (
-                                                    <span className="flex items-center gap-1 text-xs px-2 py-0.5 bg-orange-500/20 text-orange-400 border border-orange-500/30 rounded font-mono">
-                            {thread.high_count} HIGH
-                          </span>
-                                                )}
-                                            </div>
-                                        )}
-
-                                        {thread.violation_count > 0 && (
-                                            <span className="text-xs text-gray-400 font-mono">
-                        {thread.violation_count} violations
-                      </span>
-                                        )}
-
+                                    <div className="flex items-center gap-3">
                                         {/* Elapsed / timestamp */}
-                                        <span className={`text-xs font-mono ${STATUS_STYLES[thread.status]}`}>
-                      {thread.status === 'RUNNING'
-                          ? elapsed(thread.started_at)
-                          : thread.completed_at
-                              ? new Date(thread.completed_at).toLocaleTimeString()
-                              : '—'}
-                    </span>
+                                        <div className="text-right">
+                                            <div className={`text-xs font-mono flex items-center gap-1 justify-end ${STATUS_STYLES[thread.status]}`}>
+                                                <Clock className="w-3 h-3" />
+                                                {thread.status === 'RUNNING'
+                                                    ? elapsed(thread.started_at)
+                                                    : thread.completed_at
+                                                        ? new Date(thread.completed_at).toLocaleTimeString()
+                                                        : '—'
+                                                }
+                                            </div>
+                                            <div className="text-xs text-gray-600 mt-0.5">
+                                                {new Date(thread.started_at).toLocaleDateString()}
+                                            </div>
+                                        </div>
 
-                                        {/* Cancel button for running threads */}
+                                        {/* Cancel button */}
                                         {thread.status === 'RUNNING' && (
                                             <button
                                                 onClick={e => { e.stopPropagation(); cancelScan(thread.thread_id); }}
-                                                className="p-1.5 text-gray-500 hover:text-red-400 transition-colors"
+                                                disabled={cancelling === thread.thread_id}
+                                                className="p-1.5 text-gray-500 hover:text-red-400 transition-colors rounded hover:bg-red-400/10"
                                                 title="Cancel scan"
                                             >
-                                                <StopCircle className="w-4 h-4" />
+                                                {cancelling === thread.thread_id
+                                                    ? <RefreshCw className="w-4 h-4 animate-spin" />
+                                                    : <StopCircle className="w-4 h-4" />
+                                                }
                                             </button>
                                         )}
 
@@ -334,49 +353,64 @@ export default function ActiveScans() {
                                     </div>
                                 </div>
 
-                                {/* ── Expanded: violations list ── */}
+                                {/* Expanded violations */}
                                 {expandedThread === thread.thread_id && (
                                     <div className="border-t border-white/5 bg-black/20 p-4">
+
+                                        {/* Error banner */}
                                         {thread.status === 'FAILED' && thread.error_detail && (
-                                            <div className="mb-3 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-400 font-mono">
+                                            <div className="flex items-start gap-2 mb-3 px-3 py-2.5 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-xs font-mono">
+                                                <XCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
                                                 {thread.error_detail}
                                             </div>
                                         )}
 
                                         {loadingViolations === thread.thread_id ? (
-                                            <div className="flex items-center gap-2 text-xs text-gray-500 py-2">
+                                            <div className="flex items-center gap-2 text-gray-500 text-xs py-2">
                                                 <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading violations...
                                             </div>
                                         ) : violations[thread.thread_id]?.length === 0 ? (
-                                            <p className="text-xs text-green-400 py-2">✅ No violations detected</p>
+                                            <p className="text-green-500 text-xs py-2">✅ No violations detected</p>
                                         ) : violations[thread.thread_id] ? (
-                                            <div className="space-y-2">
-                                                <p className="text-xs text-gray-500 mb-3 uppercase tracking-wider">
+                                            <>
+                                                <p className="text-xs text-gray-500 mb-2 font-semibold uppercase tracking-wider">
                                                     Violations detected
                                                 </p>
-                                                {violations[thread.thread_id].map(v => (
-                                                    <div
-                                                        key={v.id}
-                                                        className="flex items-start justify-between p-3 bg-black/40 rounded-lg border border-white/5"
-                                                    >
-                                                        <div className="flex items-start gap-3">
-                              <span className={`text-xs px-2 py-0.5 rounded font-mono mt-0.5 ${SEVERITY_STYLES[v.severity]}`}>
-                                {v.severity}
-                              </span>
-                                                            <div>
-                                                                <div className="text-xs text-white font-medium">
+                                                <div className="border border-white/5 rounded-lg overflow-hidden">
+                                                    <table className="w-full text-xs">
+                                                        <thead className="bg-black/30">
+                                                        <tr>
+                                                            {['Severity', 'Location', 'Condition', 'Rule', 'Detected At'].map(h => (
+                                                                <th key={h} className="text-left px-4 py-2 text-gray-500 uppercase tracking-wider font-semibold">
+                                                                    {h}
+                                                                </th>
+                                                            ))}
+                                                        </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-white/5">
+                                                        {violations[thread.thread_id].map(v => (
+                                                            <tr key={v.id} className="hover:bg-white/5 transition-colors">
+                                                                <td className="px-4 py-2.5">
+                                                                        <span className={`px-1.5 py-0.5 rounded font-mono ${SEVERITY_STYLES[v.severity]}`}>
+                                                                            {v.severity}
+                                                                        </span>
+                                                                </td>
+                                                                <td className="px-4 py-2.5 font-mono text-white">
                                                                     {v.table_name}{v.column_name ? `.${v.column_name}` : ''}
-                                                                </div>
-                                                                <div className="text-xs text-gray-500 mt-0.5">{v.condition_matched}</div>
-                                                                <div className="text-xs text-gray-600 mt-0.5 font-mono">{v.rule_id}</div>
-                                                            </div>
-                                                        </div>
-                                                        <span className="text-xs text-gray-600 font-mono whitespace-nowrap ml-4">
-                              {new Date(v.detected_at).toLocaleTimeString()}
-                            </span>
-                                                    </div>
-                                                ))}
-                                            </div>
+                                                                </td>
+                                                                <td className="px-4 py-2.5 text-gray-400 max-w-xs truncate" title={v.condition_matched}>
+                                                                    {v.condition_matched}
+                                                                </td>
+                                                                <td className="px-4 py-2.5 text-cyan-400 font-mono">{v.rule_id}</td>
+                                                                <td className="px-4 py-2.5 text-gray-500 font-mono whitespace-nowrap">
+                                                                    {new Date(v.detected_at).toLocaleTimeString()}
+                                                                </td>
+                                                            </tr>
+                                                        ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </>
                                         ) : null}
                                     </div>
                                 )}
